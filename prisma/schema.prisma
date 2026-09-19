@@ -1,0 +1,991 @@
+// Phase 1 — Foundation schema (auth, RBAC, audit, config).
+// Phase 2 — Local Data Engine schema (geography, categories, places,
+// sources, verification, change history) added below, additively.
+// Both live in one file per Prisma convention; sections are clearly
+// marked. Never hand-edit production schema — always via migration
+// (spec Section 101).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")   // pooled connection (PgBouncer) — used at runtime
+  directUrl = env("DIRECT_URL")     // direct connection — used only by `prisma migrate`
+}
+
+// ---------------------------------------------------------------------
+// USERS & AUTH
+// ---------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+  PENDING_VERIFICATION
+}
+
+enum Role {
+  TOURIST
+  LOCAL_DATA_AGENT
+  FIELD_VERIFIER
+  BUSINESS_OWNER
+  MODERATOR
+  DATA_MANAGER
+  FINANCE_ADMIN
+  SECURITY_ADMIN
+  SUPER_ADMIN
+}
+
+model User {
+  id                String     @id @default(uuid())
+  email             String?    @unique
+  phone             String?    @unique
+  passwordHash      String
+  displayName       String?
+  status            UserStatus @default(PENDING_VERIFICATION)
+
+  emailVerifiedAt   DateTime?
+  phoneVerifiedAt   DateTime?
+
+  // MFA — architecture only in Phase 1, not enforced yet. See SECURITY.md.
+  mfaEnabled        Boolean    @default(false)
+  mfaSecret         String?
+
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  roles             UserRole[]
+  sessions          Session[]
+  auditLogsAsActor  AuditLog[] @relation("AuditActor")
+  loginAttempts     LoginAttempt[]
+  emailVerifications EmailVerificationToken[]
+  passwordResets    PasswordResetToken[]
+  sources           Source[]
+
+  // Phase 3 — Agent Platform relations
+  agentProfile         LocalDataAgentProfile?    @relation("AgentProfile")
+  trainingCompletions  AgentTrainingCompletion[] @relation("AgentTrainingCompletions")
+  assignedTasks        Task[]                    @relation("AssignedTasks")
+  createdTasks         Task[]                    @relation("CreatedTasks")
+  submissions          TaskSubmission[]          @relation("AgentSubmissions")
+  reputation           AgentReputation?          @relation("AgentReputation")
+  wallet               Wallet?                   @relation("Wallet")
+  payouts              Payout[]                  @relation("Payouts")
+  businessClaims       BusinessClaim[]           @relation("BusinessClaims")
+  businessUpdateRequests BusinessUpdateRequest[]  @relation("BusinessUpdateRequests")
+  savedPlaces          SavedPlace[]              @relation("SavedPlaces")
+  submittedReports     Report[]                  @relation("SubmittedReports")
+
+  // Optional tourist profile fields (Section 9). All nullable/optional —
+  // "make optional information genuinely optional."
+  homeCountry       String?
+  preferredLanguage String?
+  preferredCurrency String?
+
+  @@index([status])
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String
+  role      Role
+  grantedAt DateTime @default(now())
+  grantedBy String?  // userId of admin who granted it, null if self-registered as TOURIST
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@index([role])
+}
+
+// Opaque, revocable, DB-backed sessions. See ARCHITECTURE.md for rationale.
+model Session {
+  id           String    @id @default(uuid())
+  userId       String
+  tokenHash    String    @unique // SHA-256 of the raw token; raw token never stored
+  userAgent    String?
+  ipAddress    String?
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  revokedReason String?
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model LoginAttempt {
+  id         String   @id @default(uuid())
+  email      String?
+  ipAddress  String
+  success    Boolean
+  userId     String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([email, ipAddress, createdAt])
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------
+// AUDIT LOG
+// ---------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorUserId String?
+  action     String   // e.g. "auth.login.success", "auth.login.failure", "role.grant"
+  targetType String?  // e.g. "User", "Session"
+  targetId   String?
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  actor      User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([action])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------
+// PLATFORM CONFIGURATION (Section 116, 128)
+// ---------------------------------------------------------------------
+
+model FeatureFlag {
+  key         String   @id // e.g. "ENABLE_AI"
+  enabled     Boolean  @default(false)
+  description String?
+  updatedAt   DateTime @updatedAt
+  updatedBy   String?
+}
+
+model SystemSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
+
+// =======================================================================
+// PHASE 2 — LOCAL DATA ENGINE
+// Geographic hierarchy, categories, places, sources, verification,
+// change history. Geospatial "nearby" search is done with raw SQL against
+// PostGIS functions (ST_DWithin/ST_Distance) computed from lat/lng columns
+// at query time — see src/lib/places/geo.ts and DECISIONS.md (D9) for why
+// no dedicated `geography` column was added to the Prisma schema yet.
+// =======================================================================
+
+model Country {
+  id       String   @id @default(uuid())
+  name     String
+  isoCode2 String   @unique // ISO 3166-1 alpha-2, e.g. "GH"
+  isoCode3 String?  @unique
+  defaultCurrency String? // ISO 4217, e.g. "GHS" — Section 87 multi-currency support
+  defaultLanguage String? // e.g. "en" — Section 87 multi-language support
+  createdAt DateTime @default(now())
+
+  regions  Region[]
+  places   Place[]
+  emergencyNumbers EmergencyNumber[]
+  safetyAlerts     SafetyAlert[]
+}
+
+model Region {
+  id        String  @id @default(uuid())
+  countryId String
+  name      String
+
+  country   Country @relation(fields: [countryId], references: [id], onDelete: Restrict)
+  cities    City[]
+  places    Place[]
+
+  @@unique([countryId, name])
+}
+
+model City {
+  id       String @id @default(uuid())
+  regionId String
+  name     String
+  // Optional city centroid, used for city-level dashboards/defaults —
+  // not required for place-level geospatial search, which uses each
+  // Place's own lat/lng.
+  centroidLat Float?
+  centroidLng Float?
+
+  region        Region         @relation(fields: [regionId], references: [id], onDelete: Restrict)
+  neighborhoods Neighborhood[]
+  places        Place[]
+  tasks         Task[]
+  safetyAlerts  SafetyAlert[]
+  coverageTargets CityCoverageTarget[]
+
+  @@unique([regionId, name])
+  @@index([name])
+}
+
+model Neighborhood {
+  id     String @id @default(uuid())
+  cityId String
+  name   String
+
+  city   City   @relation(fields: [cityId], references: [id], onDelete: Restrict)
+  places Place[]
+
+  @@unique([cityId, name])
+}
+
+// Self-referencing so new categories/subcategories can be added without a
+// schema migration (spec Section 15).
+model Category {
+  id            String     @id @default(uuid())
+  slug          String     @unique // e.g. "restaurant", "guest-house"
+  name          String
+  parentId      String?
+  createdAt     DateTime   @default(now())
+
+  parent        Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  subcategories Category[] @relation("CategoryHierarchy")
+  places        Place[]
+  tasks         Task[]
+  coverageTargets CityCoverageTarget[]
+
+  @@index([parentId])
+}
+
+enum SourceType {
+  LOCAL_DATA_AGENT
+  BUSINESS_OWNER
+  OFFICIAL_WEBSITE
+  GOVERNMENT_SOURCE
+  TOURISM_AUTHORITY
+  PUBLIC_DIRECTORY
+  USER_REPORT
+  FIELD_OBSERVATION
+  AUTHORIZED_API
+  OTHER
+}
+
+// A Source is a reusable reference to "who/what said this" — spec Section 18.
+// Every important claim on a Place should be traceable via PlaceSource.
+model Source {
+  id                String     @id @default(uuid())
+  type              SourceType
+  label             String     // e.g. "Ghana Tourism Authority", or an agent's display name
+  contributorUserId String?
+  // Baseline reliability for this source TYPE (0-100), used as one input
+  // to the trust model (Section 158). Individual claims can override via
+  // PlaceSource.confidence.
+  baseReliability   Int        @default(50)
+  createdAt         DateTime   @default(now())
+
+  contributor       User?         @relation(fields: [contributorUserId], references: [id], onDelete: SetNull)
+  placeSources      PlaceSource[]
+}
+
+enum PlaceVerificationStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  DIGITALLY_VERIFIED
+  FIELD_VERIFIED
+  OWNER_VERIFIED
+  COMMUNITY_VERIFIED
+  SUSPENDED
+  REQUIRES_UPDATE
+  CLOSED
+  REJECTED
+}
+
+model Place {
+  id               String   @id @default(uuid())
+  name             String
+  alternativeNames String[] @default([])
+  categoryId       String
+  description      String?
+
+  countryId        String
+  regionId         String?
+  cityId           String?
+  neighborhoodId   String?
+  address          String?
+
+  // Validated at the application layer: lat in [-90,90], lng in [-180,180]
+  // (spec Section 123). Postgres CHECK constraints are added in the raw
+  // migration too, as defense in depth — see prisma/manual-sql/.
+  latitude         Float
+  longitude        Float
+
+  phone            String?
+  whatsapp         String?
+  email            String?
+  website          String?
+
+  // Structured, not free text (spec Section 123 / 16).
+  openingHours     Json?
+  priceRange       String?
+  paymentMethods   String[] @default([])
+  languages        String[] @default([])
+  services         String[] @default([])
+  amenities        String[] @default([])
+
+  verificationStatus PlaceVerificationStatus @default(DRAFT)
+  lastVerifiedAt     DateTime?
+  nextReviewAt       DateTime?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  createdByUserId  String?
+  ownerUserId      String?  // set on approved BusinessClaim — see Phase 5
+
+  category         Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  country          Country       @relation(fields: [countryId], references: [id], onDelete: Restrict)
+  region           Region?       @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  city             City?         @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  neighborhood     Neighborhood? @relation(fields: [neighborhoodId], references: [id], onDelete: SetNull)
+
+  sources          PlaceSource[]
+  changeHistory    PlaceChangeHistory[]
+  tasks            Task[]
+  claims           BusinessClaim[]
+  updateRequests   BusinessUpdateRequest[]
+  savedBy          SavedPlace[]            @relation("SavedByUsers")
+  reports          Report[]                @relation("PlaceReports")
+
+  @@index([categoryId])
+  @@index([cityId])
+  @@index([verificationStatus])
+  @@index([lastVerifiedAt])
+  @@index([latitude, longitude])
+  @@index([ownerUserId])
+}
+
+model PlaceSource {
+  id         String   @id @default(uuid())
+  placeId    String
+  sourceId   String
+  claim      String?  // what this source specifically attests to, if not "the whole record"
+  confidence Int      @default(50)
+  createdAt  DateTime @default(now())
+
+  place      Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  source     Source   @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+
+  @@index([placeId])
+}
+
+enum ChangeApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  AUTO_APPLIED
+}
+
+// Append-only change log — spec Section 32. Never overwrite a field
+// without recording what it was before.
+model PlaceChangeHistory {
+  id              String               @id @default(uuid())
+  placeId         String
+  fieldChanged    String
+  previousValue   Json?
+  newValue        Json?
+  changedByUserId String?
+  reason          String?
+  evidence        String?
+  approvalStatus  ChangeApprovalStatus @default(PENDING)
+  createdAt       DateTime             @default(now())
+
+  place           Place                @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@index([placeId])
+  @@index([approvalStatus])
+}
+
+// =======================================================================
+// PHASE 3 — AGENT PLATFORM
+// Agent registration/approval, training, task assignment, submission +
+// evidence, and reputation. See DECISIONS.md D12-D15 for scoping notes.
+// =======================================================================
+
+enum AgentApplicationStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model LocalDataAgentProfile {
+  userId            String                 @id
+  status            AgentApplicationStatus @default(PENDING_APPROVAL)
+  city              String?
+  area              String?
+  preferredLanguage String?
+  availability      String?
+  experience        String?
+  appliedAt         DateTime               @default(now())
+  approvedAt        DateTime?
+  approvedByUserId  String?
+  rejectionReason   String?
+
+  user              User                   @relation("AgentProfile", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+// Real, if condensed, training content matching spec Section 20's module
+// list — not a placeholder. `requiredForTaskTypes` gates which Task types
+// an agent can be assigned before completing it (Section 20: "require
+// training completion before unlocking certain task types").
+model TrainingModule {
+  id                   String   @id @default(uuid())
+  slug                 String   @unique
+  order                Int
+  title                String
+  content              String   // markdown
+  requiredForTaskTypes TaskType[]
+  createdAt            DateTime @default(now())
+
+  completions          AgentTrainingCompletion[]
+}
+
+model AgentTrainingCompletion {
+  id         String   @id @default(uuid())
+  agentUserId String
+  moduleId   String
+  completedAt DateTime @default(now())
+
+  agent      User           @relation("AgentTrainingCompletions", fields: [agentUserId], references: [id], onDelete: Cascade)
+  module     TrainingModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([agentUserId, moduleId])
+}
+
+enum TaskType {
+  NEW_PLACE
+  UPDATE
+  FIELD_VERIFICATION
+  CLOSURE
+  CONTACT_VERIFICATION
+  LOCATION_VERIFICATION
+  PHOTO_TASK
+}
+
+enum TaskStatus {
+  OPEN
+  ASSIGNED
+  REJECTED_BY_AGENT // agent declined — see DECISIONS.md D14, no reputation effect
+  SUBMITTED
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+model Task {
+  id               String     @id @default(uuid())
+  type             TaskType
+  status           TaskStatus @default(OPEN)
+  title            String
+  instructions     String?
+
+  placeId          String?    // required for UPDATE/FIELD_VERIFICATION/CLOSURE/CONTACT_VERIFICATION/LOCATION_VERIFICATION/PHOTO_TASK; null for NEW_PLACE
+  cityId           String?
+  categoryId       String?
+
+  assignedAgentId  String?
+  createdByUserId  String?
+
+  createdAt        DateTime   @default(now())
+  assignedAt       DateTime?
+  dueAt            DateTime?
+  rejectionReason  String?    // populated when status = REJECTED_BY_AGENT
+
+  place            Place?     @relation(fields: [placeId], references: [id], onDelete: SetNull)
+  city             City?      @relation(fields: [cityId], references: [id], onDelete: SetNull)
+  category         Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  assignedAgent    User?      @relation("AssignedTasks", fields: [assignedAgentId], references: [id], onDelete: SetNull)
+  createdBy        User?      @relation("CreatedTasks", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  submissions      TaskSubmission[]
+
+  @@index([status])
+  @@index([assignedAgentId])
+  @@index([cityId])
+}
+
+enum SubmissionReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_MORE_INFO
+}
+
+// Structured field-verification checklist per spec Section 25.
+model TaskSubmission {
+  id                String                  @id @default(uuid())
+  taskId            String
+  agentUserId       String
+
+  // Section 25 checklist — booleans, not free text, so completion can be
+  // measured.
+  placeExists          Boolean?
+  nameMatches          Boolean?
+  locationMatches      Boolean?
+  appearsOperational   Boolean?
+  contactVerified      Boolean?
+  openingInfoChecked   Boolean?
+
+  notes             String?
+
+  // GPS evidence (Section 26) — only recorded with explicit device
+  // permission on the client; accuracy is stored so reviewers can judge
+  // reliability rather than trusting coordinates blindly.
+  gpsLat            Float?
+  gpsLng            Float?
+  gpsAccuracyMeters Float?
+
+  // For NEW_PLACE tasks, the proposed place data is staged here as JSON
+  // until approval creates the actual Place row.
+  proposedPlaceData Json?
+
+  reviewStatus      SubmissionReviewStatus @default(PENDING)
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  reviewNotes       String?
+
+  submittedAt       DateTime               @default(now())
+
+  task              Task                   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  agent             User                   @relation("AgentSubmissions", fields: [agentUserId], references: [id], onDelete: Cascade)
+  evidence          Evidence[]
+
+  @@index([taskId])
+  @@index([agentUserId])
+  @@index([reviewStatus])
+}
+
+// Photo evidence. See DECISIONS.md D13 — storage is a local-filesystem
+// dev adapter only; exifStrippedAt stays null until real image processing
+// is wired up (never fake a strip that didn't happen).
+model Evidence {
+  id              String    @id @default(uuid())
+  submissionId    String
+  storageKey      String
+  url             String
+  mimeType        String?
+  fileSizeBytes   Int?
+  uploadedAt      DateTime  @default(now())
+  exifStrippedAt  DateTime?
+
+  submission      TaskSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+}
+
+enum AgentLevel {
+  LEVEL_1_NEW
+  LEVEL_2_CONTRIBUTOR
+  LEVEL_3_VERIFIED_CONTRIBUTOR
+  LEVEL_4_SENIOR_VERIFIER
+  LEVEL_5_CITY_DATA_LEAD
+}
+
+// Computed, not manually set — see src/lib/agent/reputation.ts.
+// Recalculated after every submission review; never edited directly.
+model AgentReputation {
+  userId                  String     @id
+  accuracyScore           Float      @default(0)   // approved / (approved+rejected), 0-1
+  completedTasksCount     Int        @default(0)
+  approvedSubmissionsCount Int       @default(0)
+  rejectedSubmissionsCount Int       @default(0)
+  level                   AgentLevel @default(LEVEL_1_NEW)
+  fraudStatus             AgentFraudStatus @default(NORMAL)
+  updatedAt               DateTime   @updatedAt
+
+  user                    User       @relation("AgentReputation", fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum AgentFraudStatus {
+  NORMAL
+  REVIEW
+  SUSPENDED
+}
+
+// =======================================================================
+// PHASE 4 — REWARDS
+// Configurable reward rules, an append-only ledger backing cached wallet
+// balances, and a payout workflow with a manual (non-money-moving)
+// provider adapter. See DECISIONS.md D17-D21.
+// =======================================================================
+
+// Spec Section 34: "do not hard-code reward values." One row per
+// rewardable activity; admins (Finance Administrator/Super Admin) manage
+// these via the API, never a code change.
+model RewardRule {
+  id                String    @id @default(uuid())
+  activity          RewardActivityType @unique
+  amountMinorUnits  Int
+  currency          String    // ISO 4217, e.g. "GHS"
+  active            Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  updatedByUserId   String?
+}
+
+enum RewardActivityType {
+  NEW_PLACE_APPROVED
+  FIELD_VERIFICATION_APPROVED
+  UPDATE_APPROVED
+  CLOSURE_CONFIRMED
+  CONTACT_VERIFICATION_APPROVED
+  LOCATION_VERIFICATION_APPROVED
+  PHOTO_TASK_APPROVED
+}
+
+// Cached aggregate — see DECISIONS.md D18. Always updated in the same
+// DB transaction as the WalletTransaction that justifies the change.
+model Wallet {
+  userId                String   @id
+  currency              String   @default("GHS")
+  pendingMinorUnits     Int      @default(0)
+  approvedMinorUnits    Int      @default(0)
+  paidMinorUnits        Int      @default(0)
+  reversedMinorUnits    Int      @default(0)
+  updatedAt             DateTime @updatedAt
+
+  user                  User     @relation("Wallet", fields: [userId], references: [id], onDelete: Cascade)
+  transactions          WalletTransaction[]
+}
+
+enum WalletTransactionType {
+  EARNING_PENDING    // created when a submission is approved
+  EARNING_APPROVED   // finance confirms pending -> payable (D19)
+  EARNING_REVERSED   // pending/approved earning reversed (e.g. later found fraudulent)
+  PAYOUT_REQUESTED   // agent requests withdrawal; reserves from approved balance
+  PAYOUT_PAID        // finance confirms payout completed externally
+  PAYOUT_REVERSED    // payout failed; amount returned to approved balance
+  BONUS              // manual finance-admin bonus, always requires a reason
+  ADJUSTMENT         // manual correction, always requires a reason + actor
+}
+
+// Append-only ledger — the source of truth. Never updated or deleted from
+// the application layer once written.
+model WalletTransaction {
+  id                String                @id @default(uuid())
+  walletUserId      String
+  type              WalletTransactionType
+  amountMinorUnits  Int                   // always positive; direction implied by `type`
+  currency          String
+  relatedTaskId     String?
+  relatedSubmissionId String?
+  relatedPayoutId   String?
+  reason            String?
+  createdByUserId   String?               // null for system-generated (e.g. EARNING_PENDING on auto-approval)
+  createdAt         DateTime              @default(now())
+
+  wallet            Wallet                @relation(fields: [walletUserId], references: [userId], onDelete: Cascade)
+
+  @@index([walletUserId])
+  @@index([type])
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+  REVERSED
+}
+
+enum PayoutProviderType {
+  MOBILE_MONEY
+  BANK_TRANSFER
+  MANUAL
+}
+
+model Payout {
+  id               String             @id @default(uuid())
+  userId           String
+  amountMinorUnits Int
+  currency         String
+  provider         PayoutProviderType @default(MANUAL)
+  status           PayoutStatus       @default(PENDING)
+  reference        String?
+  failureReason    String?
+  requestedAt      DateTime           @default(now())
+  processedAt      DateTime?
+  processedByUserId String?
+
+  user             User               @relation("Payouts", fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([status])
+}
+
+// =======================================================================
+// PHASE 5 — BUSINESS SYSTEM
+// Claim -> human ownership review -> OWNER_VERIFIED, plus moderated
+// owner-submitted update requests. See DECISIONS.md D22-D24.
+// =======================================================================
+
+enum BusinessClaimStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model BusinessClaim {
+  id                  String              @id @default(uuid())
+  placeId             String
+  claimantUserId      String
+  status              BusinessClaimStatus @default(PENDING)
+  justification       String?             // e.g. "I am the manager of this restaurant"
+  evidenceDescription String?             // free-text description of proof offered — see D22, no documents stored
+  submittedAt         DateTime            @default(now())
+  reviewedAt          DateTime?
+  reviewedByUserId    String?
+  rejectionReason     String?
+
+  place               Place               @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  claimant            User                @relation("BusinessClaims", fields: [claimantUserId], references: [id], onDelete: Cascade)
+
+  @@index([placeId])
+  @@index([claimantUserId])
+  @@index([status])
+}
+
+enum BusinessUpdateStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Spec Section 29: owner-submitted changes to phone/website/hours/
+// description/services/pricing. `changes` is a JSON diff of
+// field -> proposed new value, applied to Place only on approval — see
+// DECISIONS.md D23.
+model BusinessUpdateRequest {
+  id                String               @id @default(uuid())
+  placeId           String
+  requestedByUserId String
+  changes           Json
+  status            BusinessUpdateStatus @default(PENDING)
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  reviewNotes       String?
+  submittedAt       DateTime             @default(now())
+
+  place             Place                @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  requestedBy       User                 @relation("BusinessUpdateRequests", fields: [requestedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([placeId])
+  @@index([status])
+}
+
+// =======================================================================
+// PHASE 6 — TOURIST PLATFORM
+// Search lives in application code (src/lib/tourist/search.ts) on top of
+// Phase 2's geospatial engine — no new schema needed for it. Saved places
+// and reports are new. See DECISIONS.md D25-D28.
+// =======================================================================
+
+model SavedPlace {
+  id        String   @id @default(uuid())
+  userId    String
+  placeId   String
+  createdAt DateTime @default(now())
+
+  user      User     @relation("SavedPlaces", fields: [userId], references: [id], onDelete: Cascade)
+  place     Place    @relation("SavedByUsers", fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, placeId])
+  @@index([userId])
+}
+
+enum ReportReason {
+  WRONG_PHONE
+  CLOSED_BUSINESS
+  WRONG_LOCATION
+  WRONG_HOURS
+  DUPLICATE
+  MISLEADING_INFORMATION
+  UNSAFE_INFORMATION
+  INCORRECT_CATEGORY
+  OFFENSIVE_CONTENT
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  TASK_CREATED   // a verification Task was created from this report — see D25
+  RESOLVED
+  DISMISSED
+}
+
+model Report {
+  id                String       @id @default(uuid())
+  placeId           String
+  reporterUserId    String
+  reason            ReportReason
+  details           String?
+  status            ReportStatus @default(PENDING)
+  linkedTaskId      String?      // set when a verification Task is created from this report
+  createdAt         DateTime     @default(now())
+  reviewedAt        DateTime?
+  reviewedByUserId  String?
+  resolutionNotes   String?
+
+  place             Place        @relation("PlaceReports", fields: [placeId], references: [id], onDelete: Cascade)
+  reporter          User         @relation("SubmittedReports", fields: [reporterUserId], references: [id], onDelete: Cascade)
+
+  @@index([placeId])
+  @@index([status])
+}
+
+// =======================================================================
+// PHASE 8 — TRAVEL SERVICES
+// Emergency numbers, safety alerts, and a phrasebook architecture (English
+// content only — see DECISIONS.md D29/D30/D31/D32 for what's real here
+// versus deliberately left unfilled).
+// =======================================================================
+
+enum EmergencyServiceType {
+  GENERAL
+  POLICE
+  AMBULANCE
+  FIRE
+  OTHER
+}
+
+model EmergencyNumber {
+  id                String               @id @default(uuid())
+  countryId         String
+  service           EmergencyServiceType
+  number            String
+  label             String?              // e.g. "National Ambulance Service"
+  sourceDescription String               // never optional — spec Section 155, no fabricated contact info
+  sourceUrl         String?
+  lastVerifiedAt    DateTime
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  updatedByUserId   String?
+
+  country           Country              @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@index([countryId])
+}
+
+enum SafetyAlertSeverity {
+  INFO
+  ADVISORY
+  WARNING
+}
+
+model SafetyAlert {
+  id                String              @id @default(uuid())
+  countryId         String
+  cityId            String?
+  title             String
+  description       String
+  severity          SafetyAlertSeverity
+  sourceDescription String              // required — see D32, no rumor-spreading
+  sourceUrl         String?
+  startsAt          DateTime            @default(now())
+  expiresAt         DateTime?
+  createdByUserId   String?
+  createdAt         DateTime            @default(now())
+
+  country           Country             @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  city              City?               @relation(fields: [cityId], references: [id], onDelete: SetNull)
+
+  @@index([countryId])
+  @@index([cityId])
+  @@index([expiresAt])
+}
+
+// English-only content — see DECISIONS.md D30. `translations` is a JSON
+// map (languageCode -> text) structurally ready for real translations,
+// intentionally empty until a real provider or professional reviewer
+// fills it in.
+model TravelPhrase {
+  id           String   @id @default(uuid())
+  category     String   // e.g. "greetings", "emergency", "directions"
+  englishText  String
+  translations Json     @default("{}")
+  createdAt    DateTime @default(now())
+
+  @@index([category])
+}
+
+// =======================================================================
+// PHASE 10 — GLOBAL SCALE
+// External B2B API keys (see DECISIONS.md D33/D34) and per-city data
+// coverage targets (spec Section 90). i18n is a separate, code-only
+// module (src/lib/i18n/) with no new schema — see D35.
+// =======================================================================
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+}
+
+model ApiKey {
+  id                 String       @id @default(uuid())
+  keyHash            String       @unique // SHA-256 of the raw key — never stored in plaintext, see D34
+  keyPrefix          String       // first 8 chars of the raw key, safe to display in a list UI
+  label              String       // e.g. "Acme Tours integration"
+  organizationName   String?
+  scopes             String[]     // e.g. ["places.read", "categories.read"]
+  status             ApiKeyStatus @default(ACTIVE)
+  rateLimitPerMinute Int          @default(60)
+  requestCount       Int          @default(0)
+  lastUsedAt         DateTime?
+  createdByUserId    String?
+  createdAt          DateTime     @default(now())
+  expiresAt          DateTime?
+  revokedAt          DateTime?
+  revokedByUserId    String?
+
+  @@index([status])
+}
+
+model CityCoverageTarget {
+  id         String   @id @default(uuid())
+  cityId     String
+  categoryId String
+  targetCount Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  updatedByUserId String?
+
+  city       City     @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([cityId, categoryId])
+}
