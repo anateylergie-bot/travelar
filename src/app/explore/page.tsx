@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 interface SearchResult {
@@ -23,35 +24,79 @@ const VERIFICATION_LABELS: Record<string, string> = {
 };
 
 export default function ExplorePage() {
-  const [query, setQuery] = useState("");
-  const [cityId, setCityId] = useState("");
+  return (
+    <Suspense fallback={<main style={{ maxWidth: 700 }}><p>Loading…</p></main>}>
+      <ExploreContent />
+    </Suspense>
+  );
+}
+
+function ExploreContent() {
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(searchParams.get("q") ?? "");
+  const [cityId, setCityId] = useState(searchParams.get("cityId") ?? "");
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
 
+  const runSearch = useCallback(
+    async (params: { q?: string; cityId?: string; categoryId?: string }) => {
+      setError(null);
+      setLoading(true);
+      setSearched(true);
+      try {
+        const usp = new URLSearchParams();
+        if (params.q) usp.set("q", params.q);
+        if (params.cityId) usp.set("cityId", params.cityId);
+        if (params.categoryId) usp.set("categoryId", params.categoryId);
+        const res = await fetch(`/api/places?${usp.toString()}`);
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error?.message ?? "Search failed.");
+          setResults([]);
+          return;
+        }
+        setResults(data.places);
+      } catch {
+        setError("Network error. Please try again.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
+  // Supports arriving from the homepage's quick-action chips
+  // (?category=<slug>) or a direct query (?q=...&cityId=...) — resolves
+  // the category slug to an ID via the existing public categories
+  // endpoint, then runs the search automatically.
+  useEffect(() => {
+    const categorySlug = searchParams.get("category");
+    const initialQuery = searchParams.get("q") ?? "";
+    const initialCityId = searchParams.get("cityId") ?? "";
+
+    if (!categorySlug && !initialQuery && !initialCityId) return;
+
+    if (categorySlug) {
+      fetch("/api/categories")
+        .then((res) => res.json())
+        .then((data) => {
+          const match = data.categories?.find((c: { slug: string; id: string }) => c.slug === categorySlug);
+          setCategoryId(match?.id ?? null);
+          runSearch({ q: initialQuery, cityId: initialCityId, categoryId: match?.id });
+        })
+        .catch(() => runSearch({ q: initialQuery, cityId: initialCityId }));
+    } else {
+      runSearch({ q: initialQuery, cityId: initialCityId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function onSearch(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    setLoading(true);
-    setSearched(true);
-    try {
-      const params = new URLSearchParams();
-      if (query) params.set("q", query);
-      if (cityId) params.set("cityId", cityId);
-      const res = await fetch(`/api/places?${params.toString()}`);
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error?.message ?? "Search failed.");
-        setResults([]);
-        return;
-      }
-      setResults(data.places);
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setLoading(false);
-    }
+    await runSearch({ q: query, cityId, categoryId: categoryId ?? undefined });
   }
 
   return (
@@ -108,3 +153,4 @@ export default function ExplorePage() {
     </main>
   );
 }
+

@@ -66,3 +66,306 @@ th, td {
   border-bottom: 1px solid #e7e5e4;
   font-size: 0.9rem;
 }
+
+/* =====================================================================
+   HOMEPAGE — distinct from the plain internal-tool styling above.
+   Palette grounded in Ghanaian textile/material culture rather than a
+   generic "travel app" default: deep charcoal (Adinkra-dyed cloth),
+   kente gold, brick-rust, forest green, warm stone.
+   ===================================================================== */
+
+:root {
+  --home-ink: #1a1712;
+  --home-charcoal: #14110f;
+  --home-gold: #c99a3e;
+  --home-rust: #a6472e;
+  --home-forest: #1f5c3f;
+  --home-stone: #efe7da;
+}
+
+.home-hero,
+.home-band,
+.home-trust-strip,
+.home-footer {
+  font-family: var(--font-display), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ---------- Hero ---------- */
+
+.home-hero {
+  position: relative;
+  min-height: 92vh;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+  background: var(--home-charcoal);
+}
+
+.hero-carousel {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.hero-carousel-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: opacity 1.2s ease-in-out;
+}
+
+.hero-carousel-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to top,
+    rgba(20, 17, 15, 0.92) 0%,
+    rgba(20, 17, 15, 0.55) 40%,
+    rgba(20, 17, 15, 0.25) 70%,
+    rgba(20, 17, 15, 0.35) 100%
+  );
+  z-index: 1;
+}
+
+.hero-carousel-dots {
+  position: absolute;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  display: flex;
+  gap: 0.5rem;
+  z-index: 2;
+}
+
+.hero-carousel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.hero-carousel-dot.active {
+  background: var(--home-gold);
+  border-color: var(--home-gold);
+}
+
+.hero-carousel-caption {
+  position: absolute;
+  bottom: 1.5rem;
+  left: 1.5rem;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 0.8rem;
+  z-index: 2;
+  margin: 0;
+}
+
+.home-hero-content {
+  position: relative;
+  z-index: 2;
+  max-width: 720px;
+  padding: 2.5rem clamp(1.5rem, 5vw, 4rem) 3.5rem;
+  color: #fff;
+}
+
+.home-eyebrow {
+  color: var(--home-gold);
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+  margin: 0 0 0.75rem;
+}
+
+.home-headline {
+  font-weight: 700;
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+  line-height: 1.08;
+  margin: 0 0 1rem;
+}
+
+.home-subhead {
+  font-size: 1.1rem;
+  color: rgba(255, 255, 255, 0.85);
+  max-width: 34rem;
+  margin: 0 0 1.75rem;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ---------- Search + quick actions ---------- */
+
+.home-search-form {
+  display: flex;
+  gap: 0.5rem;
+  max-width: 520px;
+}
+
+.home-search-input {
+  flex: 1;
+  padding: 0.85rem 1.1rem;
+  border-radius: 999px;
+  border: none;
+  font-size: 1rem;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.home-search-button {
+  padding: 0.85rem 1.5rem;
+  border-radius: 999px;
+  border: none;
+  background: var(--home-gold);
+  color: var(--home-charcoal);
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-display), sans-serif;
+}
+
+.home-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
+}
+
+.home-quick-chip {
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.home-quick-chip-emergency {
+  border-color: var(--home-rust);
+  background: rgba(166, 71, 46, 0.35);
+}
+
+/* ---------- Audience bands ---------- */
+
+.home-band {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 420px;
+}
+
+@media (max-width: 800px) {
+  .home-band {
+    grid-template-columns: 1fr;
+  }
+}
+
+.home-band-dark {
+  background: var(--home-charcoal);
+  color: #fff;
+}
+
+.home-band-light {
+  background: var(--home-stone);
+  color: var(--home-ink);
+}
+
+.home-band-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(2rem, 5vw, 4rem);
+  gap: 1rem;
+}
+
+.home-band-copy h2 {
+  font-size: clamp(1.5rem, 3vw, 2.1rem);
+  line-height: 1.15;
+  margin: 0;
+}
+
+.home-band-copy p {
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+  max-width: 34rem;
+  margin: 0;
+  opacity: 0.9;
+}
+
+.home-cta {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 0.75rem 1.5rem;
+  border-radius: 999px;
+  background: var(--home-gold);
+  color: var(--home-charcoal);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.home-cta-dark {
+  background: var(--home-forest);
+  color: #fff;
+}
+
+/* Decorative geometric fills standing in for real photography on the
+   audience bands — the hero carousel is where real photos do the work
+   (see public/images/hero/README.md); these are intentionally abstract
+   rather than claiming to depict something they're not. */
+.home-band-photo {
+  min-height: 260px;
+}
+
+.home-band-photo-travelers {
+  background: repeating-linear-gradient(45deg, var(--home-forest) 0, var(--home-forest) 24px, #163f2c 24px, #163f2c 48px);
+}
+
+.home-band-photo-agents {
+  background: repeating-linear-gradient(-45deg, var(--home-gold) 0, var(--home-gold) 24px, #a97f2f 24px, #a97f2f 48px);
+}
+
+.home-band-photo-business {
+  background: repeating-linear-gradient(45deg, var(--home-rust) 0, var(--home-rust) 24px, #8a3a24 24px, #8a3a24 48px);
+}
+
+/* ---------- Trust strip ---------- */
+
+.home-trust-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+  justify-content: center;
+  padding: 2rem 1.5rem;
+  background: #fff;
+  border-top: 1px solid #e7e5e4;
+  border-bottom: 1px solid #e7e5e4;
+}
+
+.home-trust-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--home-ink);
+}
+
+.home-trust-dot-green { color: #1f8a4c; }
+.home-trust-dot-blue { color: #2563a8; }
+.home-trust-dot-amber { color: #b8860b; }
+.home-trust-dot-grey { color: #9a958c; }
+
+/* ---------- Footer ---------- */
+
+.home-footer {
+  text-align: center;
+  padding: 2.5rem 1.5rem 3rem;
+  color: var(--home-ink);
+}
+
+.home-footer-fine {
+  font-size: 0.85rem;
+  color: #78736a;
+  margin-top: 0.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}

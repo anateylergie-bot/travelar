@@ -233,5 +233,17 @@ a UI for API key management or coverage targets (API only), true
 multi-currency *display* logic in the tourist-facing UI (the data model
 supports it; the UI still assumes GHS/English throughout).
 
+## POST-PHASE-10 ADDITION — Admin UI for previously API-only surfaces
+
+Real admin UI pages were added for every area that previously required
+curl/Postman: Reward Rules, Payouts, Business Claims, Business Updates,
+Reports, Emergency Numbers, Safety Alerts, API Keys, and Coverage
+Targets — each gated by the same permission the underlying API already
+enforces, consuming the same service functions (no new schema, no new
+migration needed for this batch). See `docs/PRODUCTION_READINESS_PLAN.md`
+and `docs/DEPLOYMENT_RUNBOOK.md` for the planning/deployment work done
+alongside this. Status: IMPLEMENTED, not yet manually clicked through in
+a browser.
+
 ---
-Last updated: Phase 9 (AI) formally deferred pending an API provider key; Phase 10 (Global Scale) implementation added — pending your live-DB test run.
+Last updated: Phase 9 (AI) formally deferred pending an API provider key; Phase 10 (Global Scale) implementation added, plus post-Phase-10 admin UI and planning docs — pending your live-DB test run and a browser click-through of the new pages.
