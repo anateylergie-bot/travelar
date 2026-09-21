@@ -42,7 +42,8 @@ export function isOpenNow(
   const localMinutes = ((utcMinutes + timezoneOffsetMinutes) % 1440 + 1440) % 1440;
   const dayShift = Math.floor((utcMinutes + timezoneOffsetMinutes) / 1440);
   const localDayIndex = ((now.getUTCDay() + dayShift) % 7 + 7) % 7;
-  const dayKey = DAY_KEYS[localDayIndex];
+    const dayKey = DAY_KEYS[localDayIndex];
+  if (dayKey === undefined) return null; // unreachable for index 0-6, satisfies the type checker
 
   const hours = openingHours[dayKey];
   if (hours === undefined) return null; // day not specified at all - unknown

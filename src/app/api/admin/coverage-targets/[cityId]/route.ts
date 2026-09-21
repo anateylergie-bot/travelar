@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { getCityCoverageDashboard } from "@/lib/admin/coverageTargets";
 import { getCurrentUser } from "@/lib/auth/currentUser";

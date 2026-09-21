@@ -24,19 +24,21 @@ function levenshtein(a: string, b: string): number {
   if (m === 0) return n;
   if (n === 0) return m;
 
-  const dp: number[] = new Array(n + 1);
-  for (let j = 0; j <= n; j++) dp[j] = j;
+  const dp: number[] = Array.from({ length: n + 1 }, (_, j) => j);
 
   for (let i = 1; i <= m; i++) {
-    let prevDiag = dp[0];
+    let prevDiag = dp[0] ?? 0;
     dp[0] = i;
     for (let j = 1; j <= n; j++) {
-      const temp = dp[j];
-      dp[j] = a[i - 1] === b[j - 1] ? prevDiag : 1 + Math.min(prevDiag, dp[j], dp[j - 1]);
+      const temp = dp[j] ?? 0;
+      dp[j] =
+        a[i - 1] === b[j - 1]
+          ? prevDiag
+          : 1 + Math.min(prevDiag, temp, dp[j - 1] ?? 0);
       prevDiag = temp;
     }
   }
-  return dp[n];
+  return dp[n] ?? 0;
 }
 
 function normalizeName(name: string): string {

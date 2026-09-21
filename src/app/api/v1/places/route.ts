@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { searchPlaces } from "@/lib/tourist/search";
 import { requireApiKeyAccess, extractBearerToken } from "@/lib/b2b/apiKeys";

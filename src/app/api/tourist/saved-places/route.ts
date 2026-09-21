@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { listSavedPlaces } from "@/lib/tourist/savedPlaces";
 import { getCurrentUser } from "@/lib/auth/currentUser";

@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { revokeApiKey } from "@/lib/b2b/apiKeys";
 import { getCurrentUser } from "@/lib/auth/currentUser";

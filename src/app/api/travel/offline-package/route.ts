@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { buildOfflinePackage } from "@/lib/travel/offlinePackage";
 import { getCurrentUser } from "@/lib/auth/currentUser";

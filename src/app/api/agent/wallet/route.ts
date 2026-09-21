@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { getWallet, getWalletTransactions } from "@/lib/rewards/wallet";
 import { getCurrentUser } from "@/lib/auth/currentUser";

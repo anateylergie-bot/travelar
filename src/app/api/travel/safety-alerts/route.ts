@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { listActiveSafetyAlerts } from "@/lib/travel/safetyAlerts";
 import { AppError, toApiErrorBody, statusForError } from "@/lib/errors/AppError";

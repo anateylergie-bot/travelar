@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
 import { completeTrainingModule } from "@/lib/agent/training";
 import { getCurrentUser } from "@/lib/auth/currentUser";
