@@ -48,7 +48,7 @@ onMouseLeave={() => setPaused(false)}
       className="hero-carousel-image"
       style={{
         opacity:
-          i === activeIndex && loadedOk[i] !== false ? 1 : 0,
+          i === activeIndex && loadedOk[i] !== true ? 1 : 0,
       }}
       onLoad={() =>
         setLoadedOk((prev) => ({
